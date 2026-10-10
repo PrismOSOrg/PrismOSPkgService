@@ -1,6 +1,6 @@
 # PrismOS Package Repository
 
-A .NET 10 ASP.NET Core MVC application for PrismOS packages. It includes a simple landing page; package browsing and account-management UI can be added later. The existing package API routes remain available for PrismOS package-manager clients, providing public catalog/download APIs plus registered-user accounts, authenticated uploads, favorites, and download analytics. SQLite stores account data and analytics using `Microsoft.Data.Sqlite`; package blobs and their manifests remain filesystem-backed.
+A .NET 10 ASP.NET Core MVC application for PrismOS packages. It includes a simple landing page; package browsing and account-management UI can be added later. The existing package API routes remain available for PrismOS package-manager clients, providing public catalog/download APIs plus registered-user accounts, authenticated uploads, favorites, and download analytics. EF Core with SQLite stores account data and analytics; package blobs and their manifests remain filesystem-backed.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ A .NET 10 ASP.NET Core MVC application for PrismOS packages. It includes a simpl
 
 - `PrismOS.Domain` contains package and download-stat domain models.
 - `PrismOS.Application` defines the package and account repository interfaces.
-- `PrismOS.Infrastructure` implements those interfaces using the package filesystem and SQLite.
+- `PrismOS.Infrastructure` implements those interfaces using the package filesystem and EF Core with SQLite.
 - `PrismOS.Web` hosts the MVC controllers, API, configuration, and dependency wiring.
 
 ## Run locally
@@ -32,7 +32,7 @@ For QEMU user-mode networking, the guest can usually reach the host at `10.0.2.2
 - `GET /api/v1/packages/{id}/{version}/chunk?offset=N&length=M` — binary package slice.
 - `POST /api/v1/auth/register` — create an account and return a bearer token.
 - `POST /api/v1/auth/login` — authenticate and return a bearer token.
-- `GET /api/v1/auth/me` and `POST /api/v1/auth/logout` — inspect or revoke the current in-memory session.
+- `GET /api/v1/auth/me` and `POST /api/v1/auth/logout` — inspect or revoke the current persisted session.
 - `POST /api/v1/uploads` — authenticated raw binary package upload.
 - `GET /api/v1/users/me/favorites`, `PUT/DELETE /api/v1/users/me/favorites/{id}/{version}` — manage the authenticated user's favorites.
 - `GET /api/v1/users/me/downloads` — per-user download-start and byte totals (only requests carrying that user's token are attributed).
@@ -42,7 +42,7 @@ Registration and login accept JSON with `username` and `password`. Usernames are
 
 Uploads require `Authorization: Bearer <token>`, `Content-Type: application/octet-stream`, and `X-Package-Id` plus `X-Package-Version` headers. `X-Package-Description` is optional. The request body is the raw package bytes. A successful upload returns 201 with ID, version, byte size, and SHA-256. Existing versions cannot be overwritten (409); a single upload is limited to 32 MiB and the repository to 512 MiB by default. The catalog size limit still applies. All registered users can upload; there is currently no review/admin role or package deletion endpoint.
 
-Successful chunk requests update aggregate `downloadStarts` and `bytesServed`. A request starting at offset zero counts as a download start; this is not proof that the client completed the entire artifact. If a valid bearer token is supplied to a chunk request, the same counters are attributed to that user. Requests without a token are recorded in aggregate only. Download tracking describes bytes served by the server, not acknowledged bytes at the client.
+Successful chunk requests update aggregate `downloadStarts` and `bytesServed`. A request starting at offset zero counts as a download start; this is not proof that the client completed the entire artifact. If a valid bearer token is supplied to a chunk request, the same counters are attributed to that user. Requests without a token are recorded in aggregate only. Download tracking describes bytes served by the server, not acknowledged bytes at the client. EF Core creates the SQLite schema at startup. Existing SQLite databases using the previous schema remain compatible, and legacy account JSON is imported once when present.
 
 Catalog format:
 
