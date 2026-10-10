@@ -1,0 +1,90 @@
+@{
+    ViewData["Title"] = "Package Manifest";
+    var packageId = ViewData["PackageId"] as string ?? string.Empty;
+    var packageVersion = ViewData["PackageVersion"] as string ?? string.Empty;
+}
+
+<section class="manifest-page" aria-labelledby="manifest-title">
+    <a class="back-link" href="/catalog">← Back to catalog</a>
+    <div class="section-heading">
+        <p class="eyebrow">PACKAGE INFORMATION</p>
+        <h1 id="manifest-title"><span id="package-name">@packageId</span> <span id="package-version">v@(packageVersion)</span></h1>
+        <p id="manifest-status" class="catalog-status" role="status" aria-live="polite">Loading package information…</p>
+    </div>
+
+    <div id="package-information" class="manifest-card" hidden>
+        <dl id="manifest-fields" class="manifest-fields"></dl>
+        <div class="manifest-actions">
+            <a id="manifest-api-link" class="button button-secondary" target="_blank" rel="noopener">Open API manifest</a>
+            <a class="button button-primary" href="/catalog">Browse more packages</a>
+        </div>
+    </div>
+</section>
+
+<script>
+    (() => {
+        const packageId = '@packageId';
+        const packageVersion = '@packageVersion';
+        const status = document.getElementById('manifest-status');
+        const information = document.getElementById('package-information');
+        const fields = document.getElementById('manifest-fields');
+        const apiPath = `/api/v1/packages/${encodeURIComponent(packageId)}/${encodeURIComponent(packageVersion)}/manifest`;
+        document.getElementById('manifest-api-link').href = apiPath;
+
+        fetch(apiPath, { headers: { 'Accept': 'text/plain' } })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(response.status === 404
+                        ? 'This package version could not be found.'
+                        : `Manifest request failed (${response.status})`);
+                }
+                return response.text();
+            })
+            .then(text => {
+                const lines = text.trim().split(/\r?\n/);
+                const manifest = new Map();
+                for (const line of lines.slice(1)) {
+                    const separator = line.indexOf('\t');
+                    if (separator > 0) {
+                        manifest.set(line.slice(0, separator), line.slice(separator + 1));
+                    }
+                }
+
+                const labels = {
+                    description: 'Description',
+                    size: 'Size',
+                    sha256: 'SHA-256',
+                    'chunk-size': 'Chunk size',
+                    'uploaded-by': 'Uploaded by'
+                };
+                for (const [key, label] of Object.entries(labels)) {
+                    if (!manifest.has(key)) continue;
+                    addField(label, key === 'size' || key === 'chunk-size'
+                        ? formatBytes(Number(manifest.get(key)))
+                        : manifest.get(key));
+                }
+
+                status.textContent = 'Package manifest loaded';
+                information.hidden = false;
+            })
+            .catch(error => {
+                status.textContent = error.message;
+                status.classList.add('catalog-error');
+            });
+
+        function addField(label, value) {
+            const term = document.createElement('dt');
+            term.textContent = label;
+            const detail = document.createElement('dd');
+            detail.textContent = value;
+            fields.append(term, detail);
+        }
+
+        function formatBytes(bytes) {
+            if (!Number.isFinite(bytes)) return 'Unknown size';
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        }
+    })();
+</script>

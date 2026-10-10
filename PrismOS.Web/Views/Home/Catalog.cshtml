@@ -1,0 +1,86 @@
+@{
+    ViewData["Title"] = "Package Catalog";
+}
+
+<section class="catalog-page" aria-labelledby="catalog-title">
+    <div class="section-heading">
+        <h1 id="catalog-title">Browse PrismOS packages.</h1>
+        <p class="catalog-intro">The catalog is fetched from the repository APIs.</p>
+    </div>
+
+    <div id="catalog-status" class="catalog-status" role="status" aria-live="polite">Loading packages…</div>
+    <div id="package-list" class="package-list" aria-live="polite"></div>
+</section>
+
+<script>
+    (() => {
+        const status = document.getElementById('catalog-status');
+        const list = document.getElementById('package-list');
+
+        fetch('/api/v1/catalog', { headers: { 'Accept': 'text/plain' } })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Catalog request failed (${response.status})`);
+                }
+                return response.text();
+            })
+            .then(text => {
+                const lines = text.trim().split(/\r?\n/);
+                const packages = lines.slice(1)
+                    .filter(line => line.length > 0)
+                    .map(line => line.split('\t'))
+                    .filter(fields => fields.length >= 5);
+
+                if (packages.length === 0) {
+                    status.textContent = 'No packages are currently available.';
+                    return;
+                }
+
+                status.textContent = `${packages.length} package version${packages.length === 1 ? '' : 's'} available`;
+                for (const [id, version, size, sha256, manifest] of packages) {
+                    const card = document.createElement('article');
+                    card.className = 'package-card';
+
+                    const heading = document.createElement('div');
+                    heading.className = 'package-heading';
+                    const name = document.createElement('h2');
+                    name.textContent = id;
+                    const versionLabel = document.createElement('span');
+                    versionLabel.className = 'package-version';
+                    versionLabel.textContent = `v${version}`;
+                    heading.append(name, versionLabel);
+
+                    const metadata = document.createElement('dl');
+                    metadata.className = 'package-metadata';
+                    addMetadata(metadata, 'Size', formatBytes(Number(size)));
+                    addMetadata(metadata, 'SHA-256', sha256);
+
+                    const manifestLink = document.createElement('a');
+                    manifestLink.className = 'package-link';
+                    manifestLink.href = `/manifest/${encodeURIComponent(id)}/${encodeURIComponent(version)}`;
+                    manifestLink.textContent = 'View package information →';
+                    card.append(heading, metadata, manifestLink);
+                    list.appendChild(card);
+                }
+            })
+            .catch(error => {
+                status.textContent = error.message;
+                status.classList.add('catalog-error');
+            });
+
+        function addMetadata(container, label, value) {
+            const term = document.createElement('dt');
+            term.textContent = label;
+            const detail = document.createElement('dd');
+            detail.textContent = value;
+            container.append(term, detail);
+        }
+
+        function formatBytes(bytes) {
+            if (!Number.isFinite(bytes)) return 'Unknown size';
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        }
+    })();
+</script>
