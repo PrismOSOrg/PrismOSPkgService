@@ -13,10 +13,14 @@ public sealed class PackagesController(
     BackendSettings settings,
     ILogger<PackagesController> logger) : ControllerBase
 {
+    /// <summary>Returns the public tab-separated package catalog.</summary>
     [HttpGet("catalog")]
     public IActionResult Catalog() =>
         File(packages.Catalog.ToArray(), "text/plain; charset=utf-8");
 
+    /// <summary>Returns the tab-separated manifest for a package version.</summary>
+    /// <param name="id">Package identifier.</param>
+    /// <param name="version">Package version.</param>
     [HttpGet("packages/{id}/{version}/manifest")]
     public IActionResult Manifest(string id, string version)
     {
@@ -25,6 +29,11 @@ public sealed class PackagesController(
         return File(packages.CreateManifest(package), "text/plain; charset=utf-8");
     }
 
+    /// <summary>Returns a bounded binary chunk from a package.</summary>
+    /// <param name="id">Package identifier.</param>
+    /// <param name="version">Package version.</param>
+    /// <param name="offset">Zero-based byte offset.</param>
+    /// <param name="length">Requested bytes, up to the configured chunk size.</param>
     [HttpGet("packages/{id}/{version}/chunk")]
     public async Task<IActionResult> Chunk(string id, string version,
         [FromQuery] long? offset, [FromQuery] int? length)
@@ -60,6 +69,8 @@ public sealed class PackagesController(
         return File(bytes, "application/octet-stream");
     }
 
+    /// <summary>Publishes a package version using the raw request body.</summary>
+    /// <remarks>Requires a bearer token and X-Package-Id and X-Package-Version headers. X-Package-Description is optional.</remarks>
     [HttpPost("uploads")]
     public async Task<IActionResult> Upload()
     {

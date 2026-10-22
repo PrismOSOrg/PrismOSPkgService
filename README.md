@@ -1,6 +1,6 @@
 # PrismOS Package Repository
 
-A .NET 10 ASP.NET Core MVC application for PrismOS packages. It includes a simple landing page; package browsing and account-management UI can be added later. The existing package API routes remain available for PrismOS package-manager clients, providing public catalog/download APIs plus registered-user accounts, authenticated uploads, favorites, and download analytics. EF Core with SQLite stores account data and analytics; package blobs and their manifests remain filesystem-backed.
+A .NET 10 ASP.NET Core MVC application for PrismOS packages. It includes a landing page, website package catalog, account registration and sign-in, owned release-description management, and interactive Swagger documentation. The package API routes remain available for PrismOS package-manager clients, providing public catalog/download APIs plus registered-user accounts, authenticated uploads, favorites, and download analytics. EF Core with SQLite stores account data and analytics; package blobs and their manifests remain filesystem-backed.
 
 ## Architecture
 
@@ -26,6 +26,10 @@ For QEMU user-mode networking, the guest can usually reach the host at `10.0.2.2
 ## HTTP API
 
 - `GET /` — repository landing page.
+- `GET /catalog` — website package catalog and package information pages.
+- `GET /account` — account registration, sign-in, and owned release descriptions.
+- `GET /swagger` — interactive Swagger API documentation.
+- `GET /swagger/v1/swagger.json` — OpenAPI document.
 - `GET /healthz` — plain-text `ok` health response.
 - `GET /api/v1/catalog` — versioned tab-separated catalog.
 - `GET /api/v1/packages/{id}/{version}/manifest` — versioned tab-separated manifest.
@@ -36,7 +40,11 @@ For QEMU user-mode networking, the guest can usually reach the host at `10.0.2.2
 - `POST /api/v1/uploads` — authenticated raw binary package upload.
 - `GET /api/v1/users/me/favorites`, `PUT/DELETE /api/v1/users/me/favorites/{id}/{version}` — manage the authenticated user's favorites.
 - `GET /api/v1/users/me/downloads` — per-user download-start and byte totals (only requests carrying that user's token are attributed).
+- `GET /api/v1/users/me/releases` — list releases uploaded by the authenticated user.
+- `PUT /api/v1/users/me/releases/{id}/{version}` — update the description of one of the user's releases.
 - `GET /api/v1/stats/downloads` — public aggregate download-start and byte totals by package.
+
+For OS-side client implementation details, see [OS-PACKAGE-API-HANDOFF.md](OS-PACKAGE-API-HANDOFF.md).
 
 Registration and login accept JSON with `username` and `password`. Usernames are 3–24 ASCII letters, digits, dots, underscores, or hyphens; passwords are 12–128 characters. Passwords are stored as salted PBKDF2-HMAC-SHA256 hashes (310,000 iterations), never as plaintext. Authentication uses opaque 256-bit bearer tokens that expire after 12 hours; only token hashes are stored. Sessions are stored in SQLite and remain valid across restarts until they expire or are revoked. Registration and login are rate-limited to 10 requests per IP per minute.
 

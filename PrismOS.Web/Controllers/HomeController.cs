@@ -9,6 +9,9 @@ public sealed class HomeController : Controller
     [HttpGet("/catalog")]
     public IActionResult Catalog() => View();
 
+    [HttpGet("/account")]
+    public IActionResult Account() => View();
+
     [HttpGet("/manifest/{id}/{version}")]
     public IActionResult Manifest(string id, string version)
     {

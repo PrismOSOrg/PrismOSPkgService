@@ -22,6 +22,8 @@ await using (var scope = app.Services.CreateAsyncScope())
         settings.Infrastructure.LegacyAccountsPath);
 }
 app.UseStaticFiles();
+app.UseSwagger();
+app.UseSwaggerUI();
 app.UseRateLimiter();
 app.MapControllers();
 app.MapControllerRoute(

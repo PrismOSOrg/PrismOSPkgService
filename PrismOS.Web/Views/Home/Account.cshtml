@@ -1,0 +1,325 @@
+@{
+    ViewData["Title"] = "Account";
+}
+
+<section class="account-page" aria-labelledby="account-title">
+    <div id="auth-panel" class="account-panel">
+        <h1 id="account-title">Your PrismOS account</h1>
+        <p class="account-intro">Sign in or create an account to manage descriptions for releases you uploaded.</p>
+
+        <div class="account-mode-switch" role="group" aria-label="Choose account action">
+            <button id="sign-in-mode" class="account-mode-button is-active" type="button" aria-pressed="true">Sign in</button>
+            <button id="register-mode" class="account-mode-button" type="button" aria-pressed="false">Create account</button>
+        </div>
+
+        <form id="auth-form" class="account-form">
+            <label for="account-username">
+                Username
+                <input id="account-username" name="username" type="text" autocomplete="username"
+                       minlength="3" maxlength="24" pattern="[A-Za-z0-9._-]{3,24}" required />
+            </label>
+            <label for="account-password">
+                Password
+                <input id="account-password" name="password" type="password" autocomplete="current-password"
+                       maxlength="128" required />
+            </label>
+            <p id="password-hint" class="field-hint" hidden>Use 12 to 128 characters for a new account.</p>
+            <button id="auth-submit" class="button button-primary" type="submit">Sign in</button>
+        </form>
+        <p id="auth-status" class="account-status" role="status" aria-live="polite"></p>
+    </div>
+
+    <div id="releases-panel" class="release-dashboard" hidden>
+        <div class="release-dashboard-header">
+            <div>
+                <h1 id="release-title">Your releases</h1>
+                <p class="account-intro">Edit the description shown in each release manifest. Package IDs, versions, files, and checksums stay unchanged.</p>
+                <p class="signed-in-as">Signed in as <strong id="signed-in-username"></strong></p>
+            </div>
+            <div class="account-actions">
+                <button id="reload-releases" class="button button-secondary" type="button">Reload releases</button>
+                <button id="sign-out" class="button button-secondary" type="button">Sign out</button>
+            </div>
+        </div>
+        <p id="release-status" class="account-status" role="status" aria-live="polite">Loading your releases…</p>
+        <div id="release-list" class="release-list"></div>
+    </div>
+</section>
+
+<script>
+    (() => {
+        const tokenKey = 'prismos.account.token';
+        const authPanel = document.getElementById('auth-panel');
+        const releasesPanel = document.getElementById('releases-panel');
+        const authForm = document.getElementById('auth-form');
+        const usernameInput = document.getElementById('account-username');
+        const passwordInput = document.getElementById('account-password');
+        const authSubmit = document.getElementById('auth-submit');
+        const authStatus = document.getElementById('auth-status');
+        const releaseStatus = document.getElementById('release-status');
+        const releaseList = document.getElementById('release-list');
+        const reloadButton = document.getElementById('reload-releases');
+        let mode = 'sign-in';
+        let token = null;
+
+        document.getElementById('sign-in-mode').addEventListener('click', () => setMode('sign-in'));
+        document.getElementById('register-mode').addEventListener('click', () => setMode('register'));
+        reloadButton.addEventListener('click', loadReleases);
+        document.getElementById('sign-out').addEventListener('click', signOut);
+        authForm.addEventListener('submit', submitAuthentication);
+
+        function setMode(nextMode) {
+            mode = nextMode;
+            const registering = mode === 'register';
+            document.getElementById('sign-in-mode').classList.toggle('is-active', !registering);
+            document.getElementById('sign-in-mode').setAttribute('aria-pressed', String(!registering));
+            document.getElementById('register-mode').classList.toggle('is-active', registering);
+            document.getElementById('register-mode').setAttribute('aria-pressed', String(registering));
+            passwordInput.autocomplete = registering ? 'new-password' : 'current-password';
+            passwordInput.minLength = registering ? 12 : 1;
+            document.getElementById('password-hint').hidden = !registering;
+            authSubmit.textContent = registering ? 'Create account' : 'Sign in';
+            authStatus.textContent = '';
+        }
+
+        async function submitAuthentication(event) {
+            event.preventDefault();
+            authSubmit.disabled = true;
+            authSubmit.textContent = mode === 'register' ? 'Creating account…' : 'Signing in…';
+            authStatus.textContent = '';
+
+            try {
+                const response = await fetch(mode === 'register'
+                    ? '/api/v1/auth/register'
+                    : '/api/v1/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({
+                        username: usernameInput.value,
+                        password: passwordInput.value
+                    })
+                });
+                const result = await readResponse(response);
+                if (!response.ok) {
+                    throw new Error(result?.error
+                        || (response.status === 401
+                            ? 'That username and password did not match.'
+                            : `Account request failed (${response.status}).`));
+                }
+                if (!result?.accessToken) {
+                    throw new Error('The server did not return an account session.');
+                }
+
+                token = result.accessToken;
+                sessionStorage.setItem(tokenKey, token);
+                passwordInput.value = '';
+                showReleases(result.username);
+                await loadReleases();
+            } catch (error) {
+                authStatus.textContent = error.message || 'Could not reach the account service. Try again.';
+            } finally {
+                authSubmit.disabled = false;
+                authSubmit.textContent = mode === 'register' ? 'Create account' : 'Sign in';
+            }
+        }
+
+        async function restoreSession() {
+            token = sessionStorage.getItem(tokenKey);
+            if (!token) return;
+
+            try {
+                const account = await request('/api/v1/auth/me');
+                showReleases(account.username);
+                await loadReleases();
+            } catch (error) {
+                if (error.status === 401) {
+                    expireSession('Your session has expired. Sign in again.');
+                } else {
+                    authStatus.textContent = 'Could not verify your session. Check your connection and reload this page.';
+                }
+            }
+        }
+
+        async function loadReleases() {
+            releaseStatus.textContent = 'Loading your releases…';
+            releaseList.replaceChildren();
+            reloadButton.disabled = true;
+
+            try {
+                const releases = await request('/api/v1/users/me/releases');
+                if (releases.length === 0) {
+                    releaseStatus.textContent = 'No releases are attached to this account yet. Releases uploaded with this account will appear here.';
+                    return;
+                }
+
+                releaseStatus.textContent = `${releases.length} release${releases.length === 1 ? '' : 's'} found`;
+                releases.forEach((release, index) => releaseList.appendChild(createReleaseEditor(release, index)));
+            } catch (error) {
+                if (error.status === 401) {
+                    expireSession('Your session has expired. Sign in again.');
+                    return;
+                }
+                releaseStatus.textContent = error.message || 'Could not load releases. Use Reload releases to try again.';
+            } finally {
+                reloadButton.disabled = false;
+            }
+        }
+
+        function createReleaseEditor(release, index) {
+            const form = document.createElement('form');
+            form.className = 'release-editor';
+
+            const heading = document.createElement('div');
+            heading.className = 'release-heading';
+            const title = document.createElement('h2');
+            title.textContent = release.id;
+            const version = document.createElement('span');
+            version.className = 'release-version';
+            version.textContent = `v${release.version}`;
+            heading.append(title, version);
+
+            const size = document.createElement('p');
+            size.className = 'release-size';
+            size.textContent = `${formatBytes(release.size)} · SHA-256 ${release.sha256}`;
+
+            const label = document.createElement('label');
+            label.htmlFor = `release-description-${index}`;
+            label.textContent = 'Release description';
+            const description = document.createElement('textarea');
+            description.id = label.htmlFor;
+            description.name = 'description';
+            description.maxLength = 120;
+            description.rows = 3;
+            description.value = release.description || '';
+            description.setAttribute('aria-label', `Description for ${release.id} version ${release.version}`);
+            label.appendChild(description);
+
+            const actions = document.createElement('div');
+            actions.className = 'release-form-actions';
+            const count = document.createElement('span');
+            count.className = 'character-count';
+            const feedback = document.createElement('span');
+            feedback.className = 'release-feedback';
+            feedback.setAttribute('role', 'status');
+            const save = document.createElement('button');
+            save.className = 'button button-primary';
+            save.type = 'submit';
+            save.textContent = 'Save description';
+            actions.append(count, feedback, save);
+            form.append(heading, size, label, actions);
+
+            let savedDescription = description.value;
+            const updateState = () => {
+                count.textContent = `${description.value.length} / 120`;
+                save.disabled = description.value === savedDescription;
+            };
+            description.addEventListener('input', updateState);
+            updateState();
+
+            form.addEventListener('submit', async event => {
+                event.preventDefault();
+                save.disabled = true;
+                save.textContent = 'Saving…';
+                feedback.textContent = '';
+                feedback.classList.remove('account-error');
+
+                try {
+                    const updated = await request(
+                        `/api/v1/users/me/releases/${encodeURIComponent(release.id)}/${encodeURIComponent(release.version)}`,
+                        {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ description: description.value })
+                        });
+                    savedDescription = updated.description;
+                    description.value = savedDescription;
+                    feedback.textContent = 'Description saved.';
+                } catch (error) {
+                    feedback.textContent = error.message || 'Could not save the description. Try again.';
+                    feedback.classList.add('account-error');
+                    if (error.status === 401) {
+                        expireSession('Your session has expired. Sign in again.');
+                    }
+                } finally {
+                    save.textContent = 'Save description';
+                    updateState();
+                }
+            });
+
+            return form;
+        }
+
+        async function request(url, options = {}) {
+            const headers = new Headers(options.headers || {});
+            headers.set('Accept', 'application/json');
+            headers.set('Authorization', `Bearer ${token}`);
+            const response = await fetch(url, { ...options, headers });
+            const body = await readResponse(response);
+            if (!response.ok) {
+                const error = new Error(body?.error
+                    || (response.status === 401
+                        ? 'Your session has expired. Sign in again.'
+                        : `Request failed (${response.status}).`));
+                error.status = response.status;
+                throw error;
+            }
+            return body;
+        }
+
+        async function readResponse(response) {
+            const text = await response.text();
+            if (!text) return null;
+            try {
+                return JSON.parse(text);
+            } catch {
+                return { message: text.trim() };
+            }
+        }
+
+        async function signOut() {
+            const button = document.getElementById('sign-out');
+            button.disabled = true;
+            try {
+                await request('/api/v1/auth/logout', { method: 'POST' });
+                sessionStorage.removeItem(tokenKey);
+                token = null;
+                showAuthentication('You have signed out.');
+            } catch (error) {
+                if (error.status === 401) {
+                    expireSession('Your session has expired. Sign in again.');
+                } else {
+                    releaseStatus.textContent = error.message || 'Could not sign out. Try again.';
+                }
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function showReleases(username) {
+            authPanel.hidden = true;
+            releasesPanel.hidden = false;
+            document.getElementById('signed-in-username').textContent = username;
+        }
+
+        function showAuthentication(message = '') {
+            releasesPanel.hidden = true;
+            authPanel.hidden = false;
+            authStatus.textContent = message;
+        }
+
+        function expireSession(message) {
+            sessionStorage.removeItem(tokenKey);
+            token = null;
+            showAuthentication(message);
+        }
+
+        function formatBytes(bytes) {
+            if (!Number.isFinite(bytes)) return 'Unknown size';
+            if (bytes < 1024) return `${bytes} B`;
+            if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+            return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        }
+
+        restoreSession();
+    })();
+</script>
