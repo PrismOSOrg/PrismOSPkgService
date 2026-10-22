@@ -9,6 +9,7 @@ namespace PrismOS.Web.Controllers;
 [Route("api/v1/auth")]
 public sealed class AuthenticationController(IAccountStore accounts) : ControllerBase
 {
+    /// <summary>Registers an account and returns a bearer token.</summary>
     [HttpPost("register")]
     [RequestSizeLimit(16 * 1024)]
     [EnableRateLimiting("auth")]
@@ -24,6 +25,7 @@ public sealed class AuthenticationController(IAccountStore accounts) : Controlle
                 request.Username.Trim().ToLowerInvariant(), 12 * 60 * 60));
     }
 
+    /// <summary>Authenticates an account and returns a bearer token.</summary>
     [HttpPost("login")]
     [RequestSizeLimit(16 * 1024)]
     [EnableRateLimiting("auth")]
@@ -38,6 +40,7 @@ public sealed class AuthenticationController(IAccountStore accounts) : Controlle
             request.Username.Trim().ToLowerInvariant(), 12 * 60 * 60));
     }
 
+    /// <summary>Returns the username associated with the bearer token.</summary>
     [HttpGet("me")]
     public async Task<IActionResult> Me()
     {
@@ -45,6 +48,7 @@ public sealed class AuthenticationController(IAccountStore accounts) : Controlle
         return username is null ? BearerAuth.Challenge(HttpContext) : Ok(new { username });
     }
 
+    /// <summary>Revokes the current bearer token.</summary>
     [HttpPost("logout")]
     public async Task<IActionResult> Logout()
     {

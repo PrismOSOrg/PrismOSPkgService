@@ -124,6 +124,69 @@ public sealed class PackageRepository : IPackageRepository
         return _packages.TryGetValue((id.ToLowerInvariant(), version), out package);
     }
 
+    public IReadOnlyList<PackageRecord> GetPackagesUploadedBy(string username) =>
+        _packages.Values
+            .Where(package => string.Equals(package.UploadedBy, username, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(package => package.Id, StringComparer.Ordinal)
+            .ThenBy(package => package.Version, StringComparer.Ordinal)
+            .ToArray();
+
+    public async Task<PackageRecord?> UpdateDescriptionAsync(string id, string version,
+        string username, string description, CancellationToken cancellationToken)
+    {
+        if (!IsSafeSegment(id) || !IsSafeSegment(version) || string.IsNullOrWhiteSpace(username))
+            return null;
+
+        await _publishGate.WaitAsync(cancellationToken);
+        try
+        {
+            var key = (id.ToLowerInvariant(), version);
+            if (!_packages.TryGetValue(key, out PackageRecord? package)
+                || !string.Equals(package.UploadedBy, username, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            string versionDirectory = Path.GetDirectoryName(package.Path)
+                ?? throw new InvalidDataException("Package path has no version directory.");
+            string manifestPath = Path.GetFullPath(Path.Combine(versionDirectory, "manifest.json"));
+            string relativePath = Path.GetRelativePath(_root, manifestPath);
+            if (relativePath == ".." || relativePath.StartsWith(".." + Path.DirectorySeparatorChar,
+                StringComparison.Ordinal) || Path.IsPathRooted(relativePath))
+                throw new InvalidDataException("Package manifest is outside the repository.");
+            if (!File.Exists(manifestPath)
+                || (File.GetAttributes(manifestPath) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Package manifest is missing or is a symlink.");
+
+            string cleanDescription = CleanDescription(description);
+            string temporaryManifest = Path.Combine(versionDirectory,
+                ".manifest-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var sourceManifest = new PackageManifestSource(package.Id, package.Version,
+                    Path.GetFileName(package.Path), cleanDescription, package.UploadedBy);
+                await using (var manifestStream = new FileStream(temporaryManifest, FileMode.CreateNew,
+                    FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous))
+                {
+                    await JsonSerializer.SerializeAsync(manifestStream, sourceManifest,
+                        ManifestJsonOptions, cancellationToken);
+                    await manifestStream.FlushAsync(cancellationToken);
+                }
+
+                File.Move(temporaryManifest, manifestPath, overwrite: true);
+                var updatedPackage = package with { Description = cleanDescription };
+                _packages[key] = updatedPackage;
+                return updatedPackage;
+            }
+            finally
+            {
+                if (File.Exists(temporaryManifest)) File.Delete(temporaryManifest);
+            }
+        }
+        finally
+        {
+            _publishGate.Release();
+        }
+    }
+
     public byte[] CreateManifest(PackageRecord package)
     {
         string downloadPath = $"/api/v1/packages/{package.Id}/{package.Version}/chunk";
@@ -163,9 +226,9 @@ public sealed class PackageRepository : IPackageRepository
         string uploadedBy, Stream input, long? declaredLength, CancellationToken cancellationToken)
     {
         if (!IsSafeSegment(id) || !IsSafeSegment(version))
-            return new PublishPackageResult(PublishPackageStatus.InvalidMetadata, null);
+            return PublishPackageResult.Failed(PublishPackageStatus.InvalidMetadata);
         if (declaredLength is < 0 || declaredLength > _maxUploadBytes)
-            return new PublishPackageResult(PublishPackageStatus.TooLarge, null);
+            return PublishPackageResult.Failed(PublishPackageStatus.TooLarge);
 
         id = id.ToLowerInvariant();
         string cleanDescription = CleanDescription(description);
@@ -174,19 +237,19 @@ public sealed class PackageRepository : IPackageRepository
         {
             var key = (id, version);
             if (_packages.ContainsKey(key))
-                return new PublishPackageResult(PublishPackageStatus.AlreadyExists, null);
+                return PublishPackageResult.Failed(PublishPackageStatus.AlreadyExists);
 
             string versionDirectory = Path.GetFullPath(Path.Combine(_root, id, version));
             string relativeDirectory = Path.GetRelativePath(_root, versionDirectory);
             if (relativeDirectory == ".." || relativeDirectory.StartsWith(".." + Path.DirectorySeparatorChar,
                 StringComparison.Ordinal) || Path.IsPathRooted(relativeDirectory))
-                return new PublishPackageResult(PublishPackageStatus.InvalidMetadata, null);
+                return PublishPackageResult.Failed(PublishPackageStatus.InvalidMetadata);
 
             Directory.CreateDirectory(versionDirectory);
             string packagePath = Path.Combine(versionDirectory, "package.prpkg");
             string manifestPath = Path.Combine(versionDirectory, "manifest.json");
             if (File.Exists(packagePath) || File.Exists(manifestPath))
-                return new PublishPackageResult(PublishPackageStatus.AlreadyExists, null);
+                return PublishPackageResult.Failed(PublishPackageStatus.AlreadyExists);
 
             string temporaryPackage = Path.Combine(versionDirectory, ".upload-" + Guid.NewGuid().ToString("N"));
             string temporaryManifest = Path.Combine(versionDirectory, ".manifest-" + Guid.NewGuid().ToString("N"));
@@ -205,7 +268,7 @@ public sealed class PackageRepository : IPackageRepository
                     while ((read = await input.ReadAsync(buffer, cancellationToken)) != 0)
                     {
                         if (totalBytes + read > _maxUploadBytes)
-                            return new PublishPackageResult(PublishPackageStatus.TooLarge, null);
+                            return PublishPackageResult.Failed(PublishPackageStatus.TooLarge);
                         totalBytes += read;
                         hash.AppendData(buffer, 0, read);
                         await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
@@ -214,26 +277,26 @@ public sealed class PackageRepository : IPackageRepository
                 }
 
                 if (totalBytes == 0)
-                    return new PublishPackageResult(PublishPackageStatus.Empty, null);
+                    return PublishPackageResult.Failed(PublishPackageStatus.Empty);
                 if (declaredLength.HasValue && totalBytes != declaredLength.Value)
-                    return new PublishPackageResult(PublishPackageStatus.LengthMismatch, null);
+                    return PublishPackageResult.Failed(PublishPackageStatus.LengthMismatch);
 
                 string digest = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
                 long repositoryBytes = 0;
                 foreach (PackageRecord existing in _packages.Values)
                 {
                     if (repositoryBytes > _maxRepositoryBytes - existing.Size)
-                        return new PublishPackageResult(PublishPackageStatus.RepositoryFull, null);
+                        return PublishPackageResult.Failed(PublishPackageStatus.RepositoryFull);
                     repositoryBytes += existing.Size;
                 }
                 if (totalBytes > _maxRepositoryBytes - repositoryBytes)
-                    return new PublishPackageResult(PublishPackageStatus.RepositoryFull, null);
+                    return PublishPackageResult.Failed(PublishPackageStatus.RepositoryFull);
 
                 var package = new PackageRecord(id, version, cleanDescription, packagePath,
                     totalBytes, digest, uploadedBy);
                 byte[] candidateCatalog = BuildCatalog(_packages.Values.Append(package));
                 if (candidateCatalog.Length > _maxCatalogBytes)
-                    return new PublishPackageResult(PublishPackageStatus.CatalogFull, null);
+                    return PublishPackageResult.Failed(PublishPackageStatus.CatalogFull);
 
                 var sourceManifest = new PackageManifestSource(id, version, "package.prpkg",
                     cleanDescription, uploadedBy);
@@ -253,7 +316,7 @@ public sealed class PackageRepository : IPackageRepository
                     throw new IOException("Package index changed while publishing.");
                 Volatile.Write(ref _catalog, candidateCatalog);
                 published = true;
-                return new PublishPackageResult(PublishPackageStatus.Success, package);
+                return PublishPackageResult.Succeeded(package);
             }
             finally
             {
